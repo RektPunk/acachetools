@@ -1,0 +1,32 @@
+[project]
+name = "acachetools"
+version = "0.1.0"
+description = "Async cachetools decorators with stampede protection."
+readme = "README.md"
+authors = [
+    {name = "RektPunk", email = "rektpunk@gmail.com"},
+]
+requires-python = ">=3.10"
+classifiers = [
+    "Topic :: Software Development :: Libraries :: Python Modules"
+]
+dependencies = [
+    "cachetools>=7.1.4",
+]
+
+[project.urls]
+repository = "https://github.com/RektPunk/acachetools"
+
+[build-system]
+requires = ["uv_build>=0.11.23,<0.12.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+    "pytest-asyncio>=1.4.0",
+]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
