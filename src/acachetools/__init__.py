@@ -49,7 +49,7 @@ async def _run_cached(
                     return await asyncio.shield(future)
                 except asyncio.CancelledError:
                     # The caller was cancelled while waiting
-                    continue
+                    raise
 
             # Cached computation completed
             try:

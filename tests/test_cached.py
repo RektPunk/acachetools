@@ -83,9 +83,9 @@ class TestCachedLogic:
 
         assert len(mock.mock_calls) == 2
 
-    async def test_cancellation_during_wait(self) -> None:
+    async def test_waiter_cancellation_does_not_affect_others(self) -> None:
         async def mock_coro(*args: Any, **kwargs: Any) -> str:
-            await asyncio.sleep(0.1)
+            await asyncio.sleep(0.05)
             return "ok"
 
         mock = AsyncMock(side_effect=mock_coro)
@@ -95,8 +95,35 @@ class TestCachedLogic:
             asyncio.create_task(cast(Coroutine[Any, Any, Any], decorated_fn("key")))
             for _ in range(3)
         ]
-        tasks[0].cancel()
+
+        await asyncio.sleep(0.01)
+        tasks[1].cancel()
+
         results = await asyncio.gather(*tasks, return_exceptions=True)
-        assert isinstance(results[0], asyncio.CancelledError)
-        assert results[1:] == ["ok", "ok"]
+
+        assert isinstance(results[1], asyncio.CancelledError)
+        assert results[0] == "ok"
+        assert results[2] == "ok"
         assert mock.call_count == 1
+
+    async def test_owner_cancellation_cancels_waiters(self) -> None:
+        async def mock_coro(*args: Any, **kwargs: Any) -> str:
+            await asyncio.sleep(0.05)
+            return "ok"
+
+        mock = AsyncMock(side_effect=mock_coro)
+        decorated_fn = cached({})(mock)
+
+        tasks = [
+            asyncio.create_task(cast(Coroutine[Any, Any, Any], decorated_fn("key")))
+            for _ in range(3)
+        ]
+
+        await asyncio.sleep(0.01)
+        tasks[0].cancel()
+
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+
+        assert isinstance(results[0], asyncio.CancelledError)
+        assert isinstance(results[1], asyncio.CancelledError)
+        assert isinstance(results[2], asyncio.CancelledError)

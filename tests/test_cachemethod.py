@@ -50,3 +50,17 @@ class TestCachedMethodLogic:
 
         assert await decorated_method(service) == "Recovered"
         assert len(mock_inner.mock_calls) == 2
+
+    async def test_method_cache_clear(self):
+        mock_inner = AsyncMock(return_value="value")
+        decorated_method = cachedmethod(resolver)(mock_inner)
+        service = DummyService()
+
+        await decorated_method(service, "key")
+        assert len(service.my_cache) == 1
+
+        decorated_method.cache_clear(service)
+        assert len(service.my_cache) == 0
+
+        await decorated_method(service, "key")
+        assert len(mock_inner.mock_calls) == 2

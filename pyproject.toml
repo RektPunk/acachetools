@@ -1,6 +1,6 @@
 [project]
 name = "acachetools"
-version = "0.1.0"
+version = "0.1.1"
 description = "Async cachetools decorators with stampede protection."
 readme = "README.md"
 authors = [
