@@ -1,8 +1,8 @@
 import asyncio
-from collections.abc import Awaitable, Callable, MutableMapping
+from collections.abc import Callable, Coroutine, MutableMapping
 from functools import update_wrapper
 from inspect import iscoroutinefunction
-from typing import Any, ParamSpec, Protocol, TypeVar, cast, runtime_checkable
+from typing import Any, Concatenate, ParamSpec, Protocol, TypeVar, cast
 
 from cachetools.keys import hashkey, methodkey
 
@@ -10,17 +10,15 @@ P = ParamSpec("P")
 R = TypeVar("R", covariant=True)
 
 
-@runtime_checkable
 class CachedAsyncFunction(Protocol[P, R]):
-    def __call__(self, *args: P.args, **kwargs: P.kwargs) -> Awaitable[R]: ...
+    def __call__(self, *args: P.args, **kwargs: P.kwargs) -> Coroutine[Any, Any, R]: ...
 
     cache: MutableMapping[Any, Any]
     cache_clear: Callable[[], None]
 
 
-@runtime_checkable
 class CachedAsyncMethod(Protocol[P, R]):
-    def __call__(self, *args: P.args, **kwargs: P.kwargs) -> Awaitable[R]: ...
+    def __call__(self, *args: P.args, **kwargs: P.kwargs) -> Coroutine[Any, Any, R]: ...
 
     cache: Callable[[Any], MutableMapping[Any, Any]]
     cache_clear: Callable[[Any], None]
@@ -29,7 +27,7 @@ class CachedAsyncMethod(Protocol[P, R]):
 async def _run_cached(
     cache_store: MutableMapping[Any, asyncio.Future[R]],
     cache_key: Any,
-    coro_factory: Callable[[], Awaitable[R]],
+    coro_factory: Callable[[], Coroutine[Any, Any, R]],
 ) -> R:
     while True:
         future = cache_store.get(cache_key)
@@ -118,8 +116,8 @@ def cached(
     *,
     key: Callable[..., Any] = hashkey,
     info: bool = False,
-    lock: Any | None = None,
-) -> Callable[[Callable[P, Awaitable[R]]], CachedAsyncFunction[P, R]]:
+    lock: object | None = None,
+) -> Callable[[Callable[P, Coroutine[Any, Any, R]]], CachedAsyncFunction[P, R]]:
     if info:
         raise NotImplementedError("acachetools does not support `info`.")
     if lock is not None:
@@ -131,7 +129,7 @@ def cached(
     )
 
     def decorator(
-        fn: Callable[P, Awaitable[R]],
+        fn: Callable[P, Coroutine[Any, Any, R]],
     ) -> CachedAsyncFunction[P, R]:
         if not iscoroutinefunction(fn):
             raise TypeError(f"Expected Coroutine function, got {fn}")
@@ -149,10 +147,11 @@ def cached(
         def cache_clear() -> None:
             _clear_cache(cache_store)
 
-        wrapped = update_wrapper(wrapper, fn)
-        wrapped.cache = cache_store  # type: ignore[attr-defined]
-        wrapped.cache_clear = cache_clear  # type: ignore[attr-defined]
-        return wrapped  # type: ignore[return-value]
+        wrapped = cast(CachedAsyncFunction[P, R], update_wrapper(wrapper, fn))
+        wrapped.cache = cache_store
+        wrapped.cache_clear = cache_clear
+
+        return wrapped
 
     return decorator
 
@@ -162,11 +161,15 @@ def cachedmethod(
     *,
     key: Callable[..., Any] = methodkey,
     lock: Callable[[Any], Any] | None = None,
-) -> Callable[[Callable[..., Awaitable[R]]], CachedAsyncMethod[P, R]]:
+) -> Callable[
+    [Callable[Concatenate[Any, P], Coroutine[Any, Any, R]]], CachedAsyncMethod[P, R]
+]:
     if lock is not None:
         raise NotImplementedError("acachetools does not support `lock`.")
 
-    def decorator(method: Callable[..., Awaitable[R]]) -> CachedAsyncMethod[P, R]:
+    def decorator(
+        method: Callable[Concatenate[Any, P], Coroutine[Any, Any, R]],
+    ) -> CachedAsyncMethod[P, R]:
         if not iscoroutinefunction(method):
             raise TypeError(f"Expected coroutine function, got {method!r}")
 
@@ -196,10 +199,10 @@ def cachedmethod(
             )
             _clear_cache(cache_store)
 
-        wrapped = update_wrapper(wrapper, method)
-        wrapped.cache = cache  # type: ignore[attr-defined]
-        wrapped.cache_clear = cache_clear  # type: ignore[attr-defined]
+        wrapped = cast(CachedAsyncMethod[P, R], update_wrapper(wrapper, method))
+        wrapped.cache = cache
+        wrapped.cache_clear = cache_clear
 
-        return wrapped  # type: ignore[return-value]
+        return wrapped
 
     return decorator
