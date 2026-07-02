@@ -2,7 +2,7 @@
   <img src="https://capsule-render.vercel.app/api?type=transparent&fontColor=0047AB&text=acachetools&height=120&fontSize=90">
 </div>
 
-**acachetools** provides asyncio-compatible versions of `cachetools.cached()` and `cachetools.cachedmethod()`. It is compatible with [`cachetools`](https://github.com/tkem/cachetools) such as `TTLCache`, `LRUCache`, `LFUCache`, and `RRCache`. Concurrent calls for the same cache key share a single in-flight computation, preventing cache stampedes.
+**acachetools** provides asyncio-compatible versions of `cachetools.cached()` and `cachetools.cachedmethod()`. It is compatible with [`cachetools`](https://github.com/tkem/cachetools) such as `TTLCache` or `LRUCache`. Concurrent calls for the same cache key share a single in-flight computation, preventing cache stampedes.
 
 ## Installation
 ```bash
