@@ -1,7 +1,7 @@
 import asyncio
 from contextvars import ContextVar
-from typing import Any, Coroutine, cast
-from unittest.mock import AsyncMock, MagicMock, call
+from typing import Any
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -10,11 +10,11 @@ from acachetools import cached
 ctx_var: ContextVar[str] = ContextVar("ctx_var", default="default")
 
 
-async def identity(*args, **kwargs):
+async def identity(*args: Any, **kwargs: Any):
     return args + tuple(kwargs.items())
 
 
-def test_cached_fails_unimplemented_features():
+def test_cached_rejects_unsupported_features():
     with pytest.raises(NotImplementedError, match="does not support `info`"):
         cached(None, info=True)
 
@@ -22,7 +22,7 @@ def test_cached_fails_unimplemented_features():
         cached(None, lock=MagicMock())
 
 
-def test_cached_raises_type_error_without_coroutine():
+def test_cached_rejects_non_coroutine_function():
     def sync_function():
         pass
 
@@ -35,95 +35,198 @@ def test_cached_raises_type_error_without_coroutine():
         decorator(123)  # type: ignore
 
 
-class TestCachedLogic:
-    async def test_params_are_passed_through(self):
-        decorated_fn = cached({})(identity)
-        assert await decorated_fn(0) == (0,)
-        assert await decorated_fn("foo", bar="baz") == ("foo", ("bar", "baz"))
+async def test_cached_returns_cached_result():
+    mock = AsyncMock(return_value="bar")
+    decorated_fn = cached({})(mock)
 
-    async def test_cache_stampede_protection(self):
-        mock = AsyncMock(return_value="bar")
-        decorated_fn = cached({})(mock)
-        actual = await asyncio.gather(*(decorated_fn("foo") for _ in range(5)))
-        mock.assert_has_calls([call("foo")])
-        assert len(mock.mock_calls) == 1
-        assert actual == ["bar"] * 5
+    assert await decorated_fn("foo") == "bar"
+    assert await decorated_fn("foo") == "bar"
+    assert await decorated_fn("foo") == "bar"
+    assert mock.call_count == 1
 
-    async def test_does_not_cache_exceptions(self):
-        mock = AsyncMock()
-        mock.side_effect = [RuntimeError("Temporary Error"), "success_value"]
 
-        decorated_fn = cached({})(mock)
+async def test_cached_caches_different_keys_independently():
+    mock = AsyncMock(side_effect=lambda x: x)
+    decorated_fn = cached({})(mock)
 
-        with pytest.raises(RuntimeError, match="Temporary Error"):
-            await decorated_fn()
+    assert await decorated_fn(1) == 1
+    assert await decorated_fn(2) == 2
+    assert await decorated_fn(1) == 1
 
-        assert await decorated_fn() == "success_value"
-        assert len(mock.mock_calls) == 2
+    assert mock.call_count == 2
 
-    async def test_context_variables_are_maintained(self):
-        ctx_var.set("parent_value")
 
-        async def writer_coro():
-            assert ctx_var.get() == "parent_value"
-            ctx_var.set("mutated_inside")
-            return "done"
+async def test_cached_prevents_cache_stampede():
+    started = asyncio.Event()
+    release = asyncio.Event()
 
-        decorated_fn = cached({})(writer_coro)
+    async def mock_coro(*args: Any, **kwargs: Any):
+        started.set()
+        await release.wait()
+        return "bar"
+
+    mock = AsyncMock(side_effect=mock_coro)
+    decorated_fn = cached({})(mock)
+    tasks = [asyncio.create_task(decorated_fn()) for _ in range(5)]
+
+    await started.wait()
+    await asyncio.sleep(0)
+    assert mock.call_count == 1
+    release.set()
+    results = await asyncio.gather(*tasks)
+    assert results == ["bar"] * 5
+    assert mock.call_count == 1
+
+
+async def test_cached_does_not_cache_exception_during_stampede():
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def mock_coro():
+        started.set()
+        await release.wait()
+        raise RuntimeError("boom")
+
+    mock = AsyncMock(side_effect=mock_coro)
+    decorated_fn = cached({})(mock)
+
+    tasks = [asyncio.create_task(decorated_fn()) for _ in range(5)]
+
+    await started.wait()
+    await asyncio.sleep(0)
+
+    release.set()
+
+    results = await asyncio.gather(
+        *tasks,
+        return_exceptions=True,
+    )
+
+    assert all(isinstance(result, RuntimeError) for result in results)
+
+    mock.side_effect = None
+    mock.return_value = "success"
+    assert await decorated_fn() == "success"
+    assert mock.call_count == 2
+
+
+async def test_cached_params_are_passed_through():
+    decorated_fn = cached({})(identity)
+    assert await decorated_fn(0) == (0,)
+    assert await decorated_fn("foo", bar="baz") == ("foo", ("bar", "baz"))
+
+
+async def test_cached_does_not_cache_failed_result():
+    mock = AsyncMock()
+    mock.side_effect = [RuntimeError("Temporary Error"), "success_value"]
+
+    decorated_fn = cached({})(mock)
+
+    with pytest.raises(RuntimeError, match="Temporary Error"):
         await decorated_fn()
 
-        assert ctx_var.get() == "mutated_inside"
+    assert await decorated_fn() == "success_value"
+    assert len(mock.mock_calls) == 2
 
-    async def test_cache_clear_evicts_everything(self):
-        mock = AsyncMock(return_value="bar")
-        decorated_fn = cached({})(mock)
-        await decorated_fn("foo")
-        decorated_fn.cache_clear()
-        await decorated_fn("foo")
 
-        assert len(mock.mock_calls) == 2
+async def test_cached_context_variables_are_maintained():
+    ctx_var.set("parent_value")
 
-    async def test_waiter_cancellation_does_not_affect_others(self) -> None:
-        async def mock_coro(*args: Any, **kwargs: Any) -> str:
-            await asyncio.sleep(0.05)
-            return "ok"
+    async def writer_coro():
+        assert ctx_var.get() == "parent_value"
+        ctx_var.set("mutated_inside")
+        return "done"
 
-        mock = AsyncMock(side_effect=mock_coro)
-        decorated_fn = cached({})(mock)
+    decorated_fn = cached({})(writer_coro)
+    await decorated_fn()
 
-        tasks = [
-            asyncio.create_task(cast(Coroutine[Any, Any, Any], decorated_fn("key")))
-            for _ in range(3)
-        ]
+    assert ctx_var.get() == "mutated_inside"
 
-        await asyncio.sleep(0.01)
-        tasks[1].cancel()
 
-        results = await asyncio.gather(*tasks, return_exceptions=True)
+async def test_cached_cache_clear_removes_all_entries():
+    mock = AsyncMock(return_value="bar")
+    decorated_fn = cached({})(mock)
+    await decorated_fn("foo")
+    decorated_fn.cache_clear()
+    await decorated_fn("foo")
 
-        assert isinstance(results[1], asyncio.CancelledError)
-        assert results[0] == "ok"
-        assert results[2] == "ok"
-        assert mock.call_count == 1
+    assert len(mock.mock_calls) == 2
 
-    async def test_owner_cancellation_cancels_waiters(self) -> None:
-        async def mock_coro(*args: Any, **kwargs: Any) -> str:
-            await asyncio.sleep(0.05)
-            return "ok"
 
-        mock = AsyncMock(side_effect=mock_coro)
-        decorated_fn = cached({})(mock)
+async def test_cached_waiter_cancellation_does_not_affect_others():
+    started = asyncio.Event()
+    release = asyncio.Event()
 
-        tasks = [
-            asyncio.create_task(cast(Coroutine[Any, Any, Any], decorated_fn("key")))
-            for _ in range(3)
-        ]
+    async def mock_coro(*args: Any, **kwargs: Any) -> str:
+        started.set()
+        await release.wait()
+        return "ok"
 
-        await asyncio.sleep(0.01)
-        tasks[0].cancel()
+    mock = AsyncMock(side_effect=mock_coro)
+    decorated_fn = cached({})(mock)
 
-        results = await asyncio.gather(*tasks, return_exceptions=True)
+    owner = asyncio.create_task(decorated_fn("key"))
 
-        assert isinstance(results[0], asyncio.CancelledError)
-        assert isinstance(results[1], asyncio.CancelledError)
-        assert isinstance(results[2], asyncio.CancelledError)
+    await started.wait()
+    waiter1 = asyncio.create_task(decorated_fn("key"))
+    waiter2 = asyncio.create_task(decorated_fn("key"))
+    await asyncio.sleep(0)
+
+    waiter1.cancel()
+    await asyncio.sleep(0)
+    release.set()
+
+    results = await asyncio.gather(
+        owner,
+        waiter1,
+        waiter2,
+        return_exceptions=True,
+    )
+
+    assert results[0] == "ok"
+    assert isinstance(results[1], asyncio.CancelledError)
+    assert results[2] == "ok"
+    assert mock.call_count == 1
+
+
+async def test_cached_owner_cancellation_cancels_waiters():
+    started = asyncio.Event()
+
+    async def mock_coro(*args: Any, **kwargs: Any):
+        started.set()
+        await asyncio.Future()
+
+    mock = AsyncMock(side_effect=mock_coro)
+    decorated_fn = cached({})(mock)
+
+    owner = asyncio.create_task(decorated_fn("key"))
+
+    await started.wait()
+
+    waiter1 = asyncio.create_task(decorated_fn("key"))
+    waiter2 = asyncio.create_task(decorated_fn("key"))
+
+    await asyncio.sleep(0)
+
+    owner.cancel()
+
+    results = await asyncio.gather(
+        owner,
+        waiter1,
+        waiter2,
+        return_exceptions=True,
+    )
+
+    assert all(isinstance(result, asyncio.CancelledError) for result in results)
+
+    assert mock.call_count == 1
+
+
+async def test_cached_reuses_completed_result():
+    mock = AsyncMock(return_value="ok")
+    decorated = cached({})(mock)
+
+    await asyncio.gather(*(decorated() for _ in range(5)))
+
+    assert await decorated() == "ok"
+    assert mock.call_count == 1
