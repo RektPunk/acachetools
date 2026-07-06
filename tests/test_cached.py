@@ -4,6 +4,7 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from cachetools import TTLCache
 
 from acachetools import cached
 
@@ -144,13 +145,21 @@ async def test_cached_context_variables_are_maintained():
 
 
 async def test_cached_cache_clear_removes_all_entries():
+    cache: dict[Any, asyncio.Future[str]] = {}
     mock = AsyncMock(return_value="bar")
-    decorated_fn = cached({})(mock)
-    await decorated_fn("foo")
-    decorated_fn.cache_clear()
-    await decorated_fn("foo")
+    decorated_fn = cached(cache)(mock)
+    assert decorated_fn.cache is cache
 
-    assert len(mock.mock_calls) == 2
+    await decorated_fn("foo")
+    assert len(cache) == 1
+
+    decorated_fn.cache_clear()
+    assert decorated_fn.cache is cache
+    assert len(cache) == 0
+
+    await decorated_fn("foo")
+    assert len(cache) == 1
+    assert mock.call_count == 2
 
 
 async def test_cached_waiter_cancellation_does_not_affect_others():
@@ -198,14 +207,11 @@ async def test_cached_owner_cancellation_cancels_waiters():
 
     mock = AsyncMock(side_effect=mock_coro)
     decorated_fn = cached({})(mock)
-
     owner = asyncio.create_task(decorated_fn("key"))
-
     await started.wait()
 
     waiter1 = asyncio.create_task(decorated_fn("key"))
     waiter2 = asyncio.create_task(decorated_fn("key"))
-
     await asyncio.sleep(0)
 
     owner.cancel()
@@ -230,3 +236,117 @@ async def test_cached_reuses_completed_result():
 
     assert await decorated() == "ok"
     assert mock.call_count == 1
+
+
+async def test_cached_cache_clear_discards_running_result():
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    mock = AsyncMock()
+
+    async def mock_coro():
+        started.set()
+        await release.wait()
+        return "ok"
+
+    mock.side_effect = mock_coro
+    decorated_fn = cached({})(mock)
+    owner = asyncio.create_task(decorated_fn())
+    await started.wait()
+
+    waiter = asyncio.create_task(decorated_fn())
+    await asyncio.sleep(0)
+
+    decorated_fn.cache_clear()
+    waiter_result = await asyncio.gather(
+        waiter,
+        return_exceptions=True,
+    )
+
+    assert isinstance(waiter_result[0], asyncio.CancelledError)
+
+    release.set()
+
+    assert await owner == "ok"
+    assert mock.call_count == 1
+
+    assert await decorated_fn() == "ok"
+    assert mock.call_count == 2
+
+
+async def test_cached_cache_clear_cancels_running_tasks():
+    started = asyncio.Event()
+
+    async def mock_coro():
+        started.set()
+        await asyncio.Future()
+
+    mock = AsyncMock(side_effect=mock_coro)
+    decorated_fn = cached({})(mock)
+
+    owner = asyncio.create_task(decorated_fn())
+    await started.wait()
+
+    waiter = asyncio.create_task(decorated_fn())
+    await asyncio.sleep(0)
+    decorated_fn.cache_clear()
+
+    result = await asyncio.gather(
+        waiter,
+        return_exceptions=True,
+    )
+    assert isinstance(result[0], asyncio.CancelledError)
+
+    owner.cancel()
+    await asyncio.gather(owner, return_exceptions=True)
+
+
+async def test_cached_recovers_from_cancelled_future():
+    cache: dict[Any, asyncio.Future[str]] = {}
+    loop = asyncio.get_running_loop()
+    future = loop.create_future()
+    future.cancel()
+
+    cache["key"] = future
+    mock = AsyncMock(return_value="ok")
+    decorated_fn = cached(
+        cache,
+        key=lambda *_args, **_kwargs: "key",
+    )(mock)
+
+    assert await decorated_fn() == "ok"
+    assert mock.call_count == 1
+
+
+async def test_cached_uses_custom_key_function():
+    key = MagicMock(return_value="shared")
+    mock = AsyncMock(side_effect=lambda x: x)
+    decorated_fn = cached(
+        {},
+        key=key,
+    )(mock)
+
+    assert await decorated_fn(1) == 1
+    assert await decorated_fn(2) == 1
+
+    assert mock.call_count == 1
+    assert key.call_count == 2
+    key.assert_any_call(1)
+    key.assert_any_call(2)
+
+
+async def test_cached_works_with_ttl_cache():
+    mock = AsyncMock(return_value="ok")
+
+    decorated_fn = cached(
+        TTLCache(maxsize=10, ttl=0.01),
+    )(mock)
+
+    assert await decorated_fn() == "ok"
+    assert await decorated_fn() == "ok"
+    assert mock.call_count == 1
+
+    await asyncio.sleep(0.02)
+
+    assert await decorated_fn() == "ok"
+    assert mock.call_count == 2

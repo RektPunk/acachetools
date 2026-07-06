@@ -1,6 +1,6 @@
 import asyncio
 from typing import Any
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -104,11 +104,14 @@ async def test_cachedmethod_cache_clear_removes_instance_entries():
     s1, s2 = DummyService(), DummyService()
 
     await decorated(s1, "foo")
-    await decorated(s2, "foo")
+    assert len(s1.my_cache) == 1
 
+    await decorated(s2, "foo")
     decorated.cache_clear(s1)
-    assert len(s1.my_cache) == 0
     assert len(s2.my_cache) == 1
+
+    assert decorated.cache(s1) is s1.my_cache
+    assert decorated.cache(s2) is s2.my_cache
 
     await decorated(s1, "foo")
     assert mock.call_count == 3
@@ -175,3 +178,104 @@ async def test_cachedmethod_reuses_completed_result():
 
     assert await decorated(service) == "ok"
     assert mock.call_count == 1
+
+
+async def test_cachedmethod_cache_clear_discards_running_result():
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    mock = AsyncMock()
+
+    async def mock_coro(self):
+        started.set()
+        await release.wait()
+        return "ok"
+
+    mock.side_effect = mock_coro
+    decorated = cachedmethod(resolver)(mock)
+    service = DummyService()
+
+    owner = asyncio.create_task(decorated(service))
+    await started.wait()
+
+    waiter = asyncio.create_task(decorated(service))
+    await asyncio.sleep(0)
+
+    decorated.cache_clear(service)
+    waiter_result = await asyncio.gather(
+        waiter,
+        return_exceptions=True,
+    )
+
+    assert isinstance(waiter_result[0], asyncio.CancelledError)
+
+    release.set()
+
+    assert await owner == "ok"
+    assert mock.call_count == 1
+
+    assert await decorated(service) == "ok"
+    assert mock.call_count == 2
+
+
+async def test_cachedmethod_cache_clear_cancels_running_tasks():
+    started = asyncio.Event()
+
+    async def mock_coro(self):
+        started.set()
+        await asyncio.Future()
+
+    mock = AsyncMock(side_effect=mock_coro)
+    decorated = cachedmethod(resolver)(mock)
+    service = DummyService()
+
+    owner = asyncio.create_task(decorated(service))
+    await started.wait()
+
+    waiter = asyncio.create_task(decorated(service))
+    await asyncio.sleep(0)
+    decorated.cache_clear(service)
+
+    result = await asyncio.gather(
+        waiter,
+        return_exceptions=True,
+    )
+    assert isinstance(result[0], asyncio.CancelledError)
+
+    owner.cancel()
+    await asyncio.gather(owner, return_exceptions=True)
+
+
+async def test_cachedmethod_recovers_from_cancelled_future():
+    service = DummyService()
+    loop = asyncio.get_running_loop()
+    future = loop.create_future()
+    future.cancel()
+
+    service.my_cache["key"] = future
+    mock = AsyncMock(return_value="ok")
+    decorated = cachedmethod(
+        resolver,
+        key=lambda *_args, **_kwargs: "key",
+    )(mock)
+
+    assert await decorated(service) == "ok"
+    assert mock.call_count == 1
+
+
+async def test_cachedmethod_uses_custom_key_function():
+    key = MagicMock(return_value="shared")
+    mock = AsyncMock(side_effect=lambda self, x: x)
+    service = DummyService()
+    decorated = cachedmethod(
+        resolver,
+        key=key,
+    )(mock)
+
+    assert await decorated(service, 1) == 1
+    assert await decorated(service, 2) == 1
+
+    assert mock.call_count == 1
+    assert key.call_count == 2
+    key.assert_any_call(service, 1)
+    key.assert_any_call(service, 2)
