@@ -43,11 +43,7 @@ async def _run_cached(
             if not future.done():
                 # Another task is still computing this key
                 # Wait for the shared result instead of recomputing
-                try:
-                    return await asyncio.shield(future)
-                except asyncio.CancelledError:
-                    # The caller was cancelled while waiting
-                    raise
+                return await asyncio.shield(future)
 
             # Cached computation completed
             try:
@@ -76,8 +72,6 @@ async def _run_cached(
             if not shared_future.done():
                 shared_future.set_result(result)
 
-            return result
-
         except asyncio.CancelledError:
             # The owner task was cancelled
             if cache_store.get(cache_key) is shared_future:
@@ -99,6 +93,8 @@ async def _run_cached(
                 shared_future.exception()
 
             raise
+
+        return result
 
 
 def _clear_cache(
@@ -123,16 +119,15 @@ def cached(
     if lock is not None:
         raise NotImplementedError("acachetools does not support `lock`.")
 
-    cache_store = cast(
-        MutableMapping[Any, asyncio.Future[R]],
-        {} if cache is None else cache,
-    )
+    _cachec_dict = {} if cache is None else cache
 
     def decorator(
         fn: Callable[P, Coroutine[Any, Any, R]],
     ) -> CachedAsyncFunction[P, R]:
         if not iscoroutinefunction(fn):
             raise TypeError(f"Expected Coroutine function, got {fn}")
+
+        cache_store = cast("MutableMapping[Any, asyncio.Future[R]]", _cachec_dict)
 
         async def wrapper(
             *args: P.args,
@@ -147,7 +142,7 @@ def cached(
         def cache_clear() -> None:
             _clear_cache(cache_store)
 
-        wrapped = cast(CachedAsyncFunction[P, R], update_wrapper(wrapper, fn))
+        wrapped = cast("CachedAsyncFunction[P, R]", update_wrapper(wrapper, fn))
         wrapped.cache = cache_store
         wrapped.cache_clear = cache_clear
 
@@ -162,7 +157,8 @@ def cachedmethod(
     key: Callable[..., Any] = methodkey,
     lock: Callable[[Any], Any] | None = None,
 ) -> Callable[
-    [Callable[Concatenate[Any, P], Coroutine[Any, Any, R]]], CachedAsyncMethod[P, R]
+    [Callable[Concatenate[Any, P], Coroutine[Any, Any, R]]],
+    CachedAsyncMethod[P, R],
 ]:
     if lock is not None:
         raise NotImplementedError("acachetools does not support `lock`.")
@@ -179,7 +175,7 @@ def cachedmethod(
             **kwargs: P.kwargs,
         ) -> R:
             cache_store = cast(
-                MutableMapping[Any, asyncio.Future[R]],
+                "MutableMapping[Any, asyncio.Future[R]]",
                 cache(self),
             )
             return await _run_cached(
@@ -194,12 +190,12 @@ def cachedmethod(
 
         def cache_clear(self: Any) -> None:
             cache_store = cast(
-                MutableMapping[Any, asyncio.Future[Any]],
+                "MutableMapping[Any, asyncio.Future[Any]]",
                 cache(self),
             )
             _clear_cache(cache_store)
 
-        wrapped = cast(CachedAsyncMethod[P, R], update_wrapper(wrapper, method))
+        wrapped = cast("CachedAsyncMethod[P, R]", update_wrapper(wrapper, method))
         wrapped.cache = cache
         wrapped.cache_clear = cache_clear
 
