@@ -30,7 +30,7 @@ def test_cached_rejects_non_coroutine_function():
     decorator = cached(None)
 
     with pytest.raises(TypeError, match="Expected Coroutine"):
-        decorator(sync_function)  # type: ignore
+        decorator(sync_function)
 
     with pytest.raises(TypeError, match="Expected Coroutine"):
         decorator(123)  # type: ignore

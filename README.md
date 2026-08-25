@@ -5,6 +5,7 @@
 **acachetools** provides asyncio-compatible versions of `cachetools.cached()` and `cachetools.cachedmethod()`, with support for [`cachetools`](https://github.com/tkem/cachetools) cache implementations such as `TTLCache` and `LRUCache`. Concurrent calls for the same cache key share a single in-flight computation, preventing cache stampedes.
 
 ## Installation
+
 ```bash
 pip install acachetools
 ```
@@ -17,9 +18,9 @@ pip install acachetools
 from cachetools import TTLCache
 from acachetools import cached
 
+
 @cached(cache=TTLCache(maxsize=1024, ttl=600))
-async def some_func(value: int):
-    ...
+async def some_func(value: int): ...
 ```
 
 ### `cachedmethod`
@@ -34,6 +35,5 @@ class SomeClass:
         self.cache = LRUCache(maxsize=128)
 
     @cachedmethod(lambda self: self.cache)
-    async def some_func(self, value: int):
-        ...
+    async def some_func(self, value: int): ...
 ```
