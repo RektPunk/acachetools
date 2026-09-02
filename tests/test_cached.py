@@ -15,19 +15,11 @@ async def identity(*args: Any, **kwargs: Any):
     return args + tuple(kwargs.items())
 
 
-def test_cached_rejects_unsupported_features():
-    with pytest.raises(NotImplementedError, match="does not support `info`"):
-        cached(None, info=True)
-
-    with pytest.raises(NotImplementedError, match="does not support `lock`"):
-        cached(None, lock=MagicMock())
-
-
 def test_cached_rejects_non_coroutine_function():
     def sync_function():
         pass
 
-    decorator = cached(None)
+    decorator = cached({})
 
     with pytest.raises(TypeError, match="Expected Coroutine"):
         decorator(sync_function)
@@ -274,7 +266,7 @@ async def test_cached_cache_clear_discards_running_result():
     assert mock.call_count == 2
 
 
-async def test_cached_cache_clear_cancels_running_tasks():
+async def test_cached_cache_clear_cancels_waiters():
     started = asyncio.Event()
 
     async def mock_coro():
@@ -339,14 +331,14 @@ async def test_cached_works_with_ttl_cache():
     mock = AsyncMock(return_value="ok")
 
     decorated_fn = cached(
-        TTLCache(maxsize=10, ttl=0.01),
+        TTLCache(maxsize=10, ttl=0.05),
     )(mock)
 
     assert await decorated_fn() == "ok"
     assert await decorated_fn() == "ok"
     assert mock.call_count == 1
 
-    await asyncio.sleep(0.02)
+    await asyncio.sleep(0.1)
 
     assert await decorated_fn() == "ok"
     assert mock.call_count == 2

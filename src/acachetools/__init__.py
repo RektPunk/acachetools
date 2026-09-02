@@ -108,26 +108,17 @@ def _clear_cache(
 
 
 def cached(
-    cache: MutableMapping[Any, Any] | None = None,
+    cache: MutableMapping[Any, Any],
     *,
     key: Callable[..., Any] = hashkey,
-    info: bool = False,
-    lock: object | None = None,
 ) -> Callable[[Callable[P, Coroutine[Any, Any, R]]], CachedAsyncFunction[P, R]]:
-    if info:
-        raise NotImplementedError("acachetools does not support `info`.")
-    if lock is not None:
-        raise NotImplementedError("acachetools does not support `lock`.")
-
-    _cachec_dict = {} if cache is None else cache
-
     def decorator(
         fn: Callable[P, Coroutine[Any, Any, R]],
     ) -> CachedAsyncFunction[P, R]:
         if not iscoroutinefunction(fn):
             raise TypeError(f"Expected Coroutine function, got {fn}")
 
-        cache_store = cast("MutableMapping[Any, asyncio.Future[R]]", _cachec_dict)
+        cache_store = cast("MutableMapping[Any, asyncio.Future[R]]", cache)
 
         async def wrapper(
             *args: P.args,
@@ -155,14 +146,10 @@ def cachedmethod(
     cache: Callable[[Any], MutableMapping[Any, Any]],
     *,
     key: Callable[..., Any] = methodkey,
-    lock: Callable[[Any], Any] | None = None,
 ) -> Callable[
     [Callable[Concatenate[Any, P], Coroutine[Any, Any, R]]],
     CachedAsyncMethod[P, R],
 ]:
-    if lock is not None:
-        raise NotImplementedError("acachetools does not support `lock`.")
-
     def decorator(
         method: Callable[Concatenate[Any, P], Coroutine[Any, Any, R]],
     ) -> CachedAsyncMethod[P, R]:
