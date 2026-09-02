@@ -24,6 +24,15 @@ class CachedAsyncMethod(Protocol[P, R]):
     cache_clear: Callable[[Any], None]
 
 
+def _remove_if_current(
+    cache_store: MutableMapping[Any, asyncio.Future[Any]],
+    cache_key: Any,
+    future: asyncio.Future[Any],
+) -> None:
+    if cache_store.get(cache_key) is future:
+        cache_store.pop(cache_key, None)
+
+
 async def _run_cached(
     cache_store: MutableMapping[Any, asyncio.Future[R]],
     cache_key: Any,
@@ -36,8 +45,7 @@ async def _run_cached(
         if future is not None:
             if future.cancelled():
                 # Cached Future was cancelled
-                if cache_store.get(cache_key) is future:
-                    cache_store.pop(cache_key, None)
+                _remove_if_current(cache_store, cache_key, future)
                 continue
 
             if not future.done():
@@ -50,8 +58,7 @@ async def _run_cached(
                 return future.result()
             except Exception:
                 # Failed results are not cached
-                if cache_store.get(cache_key) is future:
-                    cache_store.pop(cache_key, None)
+                _remove_if_current(cache_store, cache_key, future)
                 continue
 
         # Cache miss
@@ -74,8 +81,7 @@ async def _run_cached(
 
         except asyncio.CancelledError:
             # The owner task was cancelled
-            if cache_store.get(cache_key) is shared_future:
-                cache_store.pop(cache_key, None)
+            _remove_if_current(cache_store, cache_key, shared_future)
 
             if not shared_future.done():
                 shared_future.cancel()
@@ -84,8 +90,7 @@ async def _run_cached(
 
         except Exception as exc:
             # Exceptions are not cached
-            if cache_store.get(cache_key) is shared_future:
-                cache_store.pop(cache_key, None)
+            _remove_if_current(cache_store, cache_key, shared_future)
 
             if not shared_future.done():
                 shared_future.set_exception(exc)
@@ -93,6 +98,11 @@ async def _run_cached(
                 shared_future.exception()
 
             raise
+        finally:
+            # Ensure the shared Future is never left pending
+            if not shared_future.done():
+                _remove_if_current(cache_store, cache_key, shared_future)
+                shared_future.cancel()
 
         return result
 
@@ -108,26 +118,17 @@ def _clear_cache(
 
 
 def cached(
-    cache: MutableMapping[Any, Any] | None = None,
+    cache: MutableMapping[Any, Any],
     *,
     key: Callable[..., Any] = hashkey,
-    info: bool = False,
-    lock: object | None = None,
 ) -> Callable[[Callable[P, Coroutine[Any, Any, R]]], CachedAsyncFunction[P, R]]:
-    if info:
-        raise NotImplementedError("acachetools does not support `info`.")
-    if lock is not None:
-        raise NotImplementedError("acachetools does not support `lock`.")
-
-    _cachec_dict = {} if cache is None else cache
-
     def decorator(
         fn: Callable[P, Coroutine[Any, Any, R]],
     ) -> CachedAsyncFunction[P, R]:
         if not iscoroutinefunction(fn):
             raise TypeError(f"Expected Coroutine function, got {fn}")
 
-        cache_store = cast("MutableMapping[Any, asyncio.Future[R]]", _cachec_dict)
+        cache_store = cast("MutableMapping[Any, asyncio.Future[R]]", cache)
 
         async def wrapper(
             *args: P.args,
@@ -155,14 +156,10 @@ def cachedmethod(
     cache: Callable[[Any], MutableMapping[Any, Any]],
     *,
     key: Callable[..., Any] = methodkey,
-    lock: Callable[[Any], Any] | None = None,
 ) -> Callable[
     [Callable[Concatenate[Any, P], Coroutine[Any, Any, R]]],
     CachedAsyncMethod[P, R],
 ]:
-    if lock is not None:
-        raise NotImplementedError("acachetools does not support `lock`.")
-
     def decorator(
         method: Callable[Concatenate[Any, P], Coroutine[Any, Any, R]],
     ) -> CachedAsyncMethod[P, R]:

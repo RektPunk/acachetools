@@ -26,6 +26,18 @@ async def test_cachedmethod_returns_cached_result():
     assert mock.call_count == 1
 
 
+async def test_cachedmethod_caches_different_keys_independently():
+    mock = AsyncMock(side_effect=lambda self, x: x)
+    decorated = cachedmethod(resolver)(mock)
+    service = DummyService()
+
+    assert await decorated(service, 1) == 1
+    assert await decorated(service, 2) == 2
+    assert await decorated(service, 1) == 1
+
+    assert mock.call_count == 2
+
+
 async def test_cachedmethod_caches_instance_independently():
     mock = AsyncMock(side_effect=lambda self, x: x)
     decorated = cachedmethod(resolver)(mock)
@@ -218,7 +230,7 @@ async def test_cachedmethod_cache_clear_discards_running_result():
     assert mock.call_count == 2
 
 
-async def test_cachedmethod_cache_clear_cancels_running_tasks():
+async def test_cachedmethod_cache_clear_cancels_waiters():
     started = asyncio.Event()
 
     async def mock_coro(self):
