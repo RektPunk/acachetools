@@ -24,6 +24,15 @@ class CachedAsyncMethod(Protocol[P, R]):
     cache_clear: Callable[[Any], None]
 
 
+def _remove_if_current(
+    cache_store: MutableMapping[Any, asyncio.Future[Any]],
+    cache_key: Any,
+    future: asyncio.Future[Any],
+) -> None:
+    if cache_store.get(cache_key) is future:
+        cache_store.pop(cache_key, None)
+
+
 async def _run_cached(
     cache_store: MutableMapping[Any, asyncio.Future[R]],
     cache_key: Any,
@@ -36,8 +45,7 @@ async def _run_cached(
         if future is not None:
             if future.cancelled():
                 # Cached Future was cancelled
-                if cache_store.get(cache_key) is future:
-                    cache_store.pop(cache_key, None)
+                _remove_if_current(cache_store, cache_key, future)
                 continue
 
             if not future.done():
@@ -50,8 +58,7 @@ async def _run_cached(
                 return future.result()
             except Exception:
                 # Failed results are not cached
-                if cache_store.get(cache_key) is future:
-                    cache_store.pop(cache_key, None)
+                _remove_if_current(cache_store, cache_key, future)
                 continue
 
         # Cache miss
@@ -74,8 +81,7 @@ async def _run_cached(
 
         except asyncio.CancelledError:
             # The owner task was cancelled
-            if cache_store.get(cache_key) is shared_future:
-                cache_store.pop(cache_key, None)
+            _remove_if_current(cache_store, cache_key, shared_future)
 
             if not shared_future.done():
                 shared_future.cancel()
@@ -84,8 +90,7 @@ async def _run_cached(
 
         except Exception as exc:
             # Exceptions are not cached
-            if cache_store.get(cache_key) is shared_future:
-                cache_store.pop(cache_key, None)
+            _remove_if_current(cache_store, cache_key, shared_future)
 
             if not shared_future.done():
                 shared_future.set_exception(exc)
@@ -93,6 +98,11 @@ async def _run_cached(
                 shared_future.exception()
 
             raise
+        finally:
+            # Ensure the shared Future is never left pending
+            if not shared_future.done():
+                _remove_if_current(cache_store, cache_key, shared_future)
+                shared_future.cancel()
 
         return result
 
